@@ -1,0 +1,25 @@
+# Example configuration for gcp-key-auditor
+# Values here override built-in defaults.
+
+[severity_thresholds]
+critical = 80
+high = 55
+medium = 25
+
+[scoring_weights]
+accepted_multiplier = 1.0
+service_disabled_factor = 0.30
+denied_or_quota_points = 1
+restricted_penalty = 12
+invalid_penalty = 4
+
+[service_weights]
+maps_places_nearby = 30
+maps_geolocation = 30
+cloud_vision = 30
+cloud_translation = 22
+cloud_natural_language = 22
+maps_geocoding = 20
+maps_timezone = 15
+maps_elevation = 15
+cloud_text_to_speech = 15

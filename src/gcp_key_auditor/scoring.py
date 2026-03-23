@@ -1,40 +1,47 @@
 from __future__ import annotations
 
+from gcp_key_auditor.config import AuditorConfig
 from gcp_key_auditor.models import KeyAudit
 
 
-def _severity_for_score(score: int) -> str:
-    if score >= 70:
+def _severity_for_score(score: int, config: AuditorConfig) -> str:
+    if score >= config.severity_thresholds.critical:
         return "critical"
-    if score >= 45:
+    if score >= config.severity_thresholds.high:
         return "high"
-    if score >= 20:
+    if score >= config.severity_thresholds.medium:
         return "medium"
     if score > 0:
         return "low"
     return "info"
 
 
-def score_key(audit: KeyAudit) -> KeyAudit:
+def score_key(audit: KeyAudit, config: AuditorConfig) -> KeyAudit:
     score = 0
 
     accepted = [r for r in audit.probe_results if r.auth_signal == "accepted"]
     service_disabled = [r for r in audit.probe_results if r.auth_signal == "valid_key_service_disabled"]
     restricted = [r for r in audit.probe_results if r.auth_signal == "restricted"]
     denied_or_quota = [r for r in audit.probe_results if r.auth_signal == "denied_or_quota"]
+    invalid = [r for r in audit.probe_results if r.auth_signal == "invalid"]
 
-    score += sum(r.impact_weight for r in accepted)
-    score += sum(max(4, r.impact_weight // 4) for r in service_disabled)
-    score += sum(2 for _ in denied_or_quota)
+    score += int(
+        sum(r.impact_weight for r in accepted) * config.scoring_weights.accepted_multiplier
+    )
+    score += int(
+        sum(r.impact_weight * config.scoring_weights.service_disabled_factor for r in service_disabled)
+    )
+    score += config.scoring_weights.denied_or_quota_points * len(denied_or_quota)
 
     # Restriction evidence lowers practical exploitation risk.
-    score -= 10 if restricted else 0
+    score -= config.scoring_weights.restricted_penalty if restricted else 0
+    score -= config.scoring_weights.invalid_penalty * len(invalid)
 
     # Keep score in a stable range.
     score = max(0, min(100, score))
 
     audit.score = score
-    audit.severity = _severity_for_score(score)
+    audit.severity = _severity_for_score(score, config)
 
     if accepted:
         top = sorted(accepted, key=lambda x: x.impact_weight, reverse=True)[:3]

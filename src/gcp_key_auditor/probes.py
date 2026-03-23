@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import threading
 import time
+from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
 from typing import Any
 
@@ -84,6 +86,26 @@ PROBE_DEFINITIONS: list[ProbeDefinition] = [
         request_kind="text_to_speech",
     ),
 ]
+
+
+class RateLimiter:
+    def __init__(self, rate_per_sec: float | None) -> None:
+        self.rate_per_sec = rate_per_sec
+        self._lock = threading.Lock()
+        self._next_allowed = 0.0
+
+    def wait(self) -> None:
+        if not self.rate_per_sec or self.rate_per_sec <= 0:
+            return
+
+        min_interval = 1.0 / self.rate_per_sec
+        with self._lock:
+            now = time.perf_counter()
+            if now < self._next_allowed:
+                sleep_for = self._next_allowed - now
+                time.sleep(sleep_for)
+                now = self._next_allowed
+            self._next_allowed = now + min_interval
 
 
 def _pick(d: dict[str, Any], keys: list[str], default: str = "") -> str:
@@ -248,58 +270,75 @@ def run_probes(
     android_package: str | None = None,
     android_cert_sha1: str | None = None,
     ios_bundle_id: str | None = None,
+    probe_workers: int = 1,
+    rate_limit_per_sec: float | None = None,
+    service_weight_overrides: dict[str, int] | None = None,
+    limiter: RateLimiter | None = None,
 ) -> list[ProbeResult]:
     results: list[ProbeResult] = []
     key_headers = _headers_with_key(key, android_package, android_cert_sha1, ios_bundle_id)
+    service_weight_overrides = service_weight_overrides or {}
+    limiter = limiter or RateLimiter(rate_limit_per_sec)
+
+    def run_single_probe(definition: ProbeDefinition) -> ProbeResult:
+        endpoint, headers, params, body = _build_request(definition, key)
+        merged_headers = {**headers, **key_headers}
+
+        # Some legacy endpoints only document query-param keys. Keep both for compatibility.
+        if "key" not in params and definition.request_kind in {
+            "translation",
+            "natural_language",
+            "vision",
+        }:
+            params["key"] = key
+
+        limiter.wait()
+        started = time.perf_counter()
+        http_status: int | None = None
+        service_status: str | None = None
+        evidence = ""
+
+        try:
+            if definition.method == "GET":
+                resp = client.get(endpoint, params=params, headers=merged_headers)
+            else:
+                resp = client.post(endpoint, params=params, headers=merged_headers, json=body)
+
+            http_status = resp.status_code
+            service_status, evidence = _parse_response(resp)
+        except httpx.TimeoutException:
+            evidence = "timeout"
+        except httpx.HTTPError as exc:
+            evidence = f"network_error: {exc.__class__.__name__}"
+
+        latency_ms = (time.perf_counter() - started) * 1000
+        auth_signal = _auth_signal(http_status, service_status, evidence)
+        success = _is_success(http_status, auth_signal)
+        impact_weight = service_weight_overrides.get(definition.service, definition.impact_weight)
+
+        return ProbeResult(
+            service=definition.service,
+            endpoint=definition.endpoint,
+            method=definition.method,
+            success=success,
+            auth_signal=auth_signal,
+            impact_weight=impact_weight,
+            http_status=http_status,
+            service_status=service_status,
+            evidence=evidence,
+            latency_ms=round(latency_ms, 2),
+        )
 
     with httpx.Client(timeout=timeout_seconds, follow_redirects=True) as client:
-        for definition in PROBE_DEFINITIONS:
-            endpoint, headers, params, body = _build_request(definition, key)
-            merged_headers = {**headers, **key_headers}
+        worker_count = max(1, min(probe_workers, len(PROBE_DEFINITIONS)))
+        if worker_count == 1:
+            for definition in PROBE_DEFINITIONS:
+                results.append(run_single_probe(definition))
+            return results
 
-            # Some legacy endpoints only document query-param keys. Keep both for compatibility.
-            if "key" not in params and definition.request_kind in {
-                "translation",
-                "natural_language",
-                "vision",
-            }:
-                params["key"] = key
-
-            started = time.perf_counter()
-            http_status: int | None = None
-            service_status: str | None = None
-            evidence = ""
-
-            try:
-                if definition.method == "GET":
-                    resp = client.get(endpoint, params=params, headers=merged_headers)
-                else:
-                    resp = client.post(endpoint, params=params, headers=merged_headers, json=body)
-
-                http_status = resp.status_code
-                service_status, evidence = _parse_response(resp)
-            except httpx.TimeoutException:
-                evidence = "timeout"
-            except httpx.HTTPError as exc:
-                evidence = f"network_error: {exc.__class__.__name__}"
-
-            latency_ms = (time.perf_counter() - started) * 1000
-            auth_signal = _auth_signal(http_status, service_status, evidence)
-            success = _is_success(http_status, auth_signal)
-
-            results.append(
-                ProbeResult(
-                    service=definition.service,
-                    endpoint=definition.endpoint,
-                    method=definition.method,
-                    success=success,
-                    auth_signal=auth_signal,
-                    impact_weight=definition.impact_weight,
-                    http_status=http_status,
-                    service_status=service_status,
-                    evidence=evidence,
-                    latency_ms=round(latency_ms, 2),
-                )
-            )
+        with ThreadPoolExecutor(max_workers=worker_count) as executor:
+            futures = [executor.submit(run_single_probe, definition) for definition in PROBE_DEFINITIONS]
+            for future in futures:
+                results.append(future.result())
 
     return results

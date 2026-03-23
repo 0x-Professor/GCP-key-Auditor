@@ -53,6 +53,17 @@ uv sync --dev
 gcp-key-auditor scan --path . --output-json report.json --output-md report.md
 ```
 
+For larger repos with many keys, enable concurrency and pacing:
+
+```bash
+gcp-key-auditor scan \
+  --path . \
+  --key-workers 4 \
+  --probe-workers 4 \
+  --rate-limit-per-sec 8 \
+  --config gcp-key-auditor.toml
+```
+
 ### 2) Audit one key directly
 
 ```bash
@@ -68,6 +79,22 @@ gcp-key-auditor audit \
   --android-cert-sha1 DA:39:A3:EE:5E:6B:4B:0D:32:55:BF:EF:95:60:18:90:AF:D8:07:09 \
   --ios-bundle-id com.example.ios
 ```
+
+## Configuration
+
+Severity thresholds and scoring weights are configurable via TOML.
+
+Default config path:
+
+- `gcp-key-auditor.toml` in the working directory.
+
+Override config path:
+
+```bash
+gcp-key-auditor scan --path . --config custom-auditor.toml
+```
+
+See the provided [gcp-key-auditor.toml](gcp-key-auditor.toml) for all supported options.
 
 ## Output Severity Levels
 
