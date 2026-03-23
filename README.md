@@ -101,6 +101,30 @@ uv run pytest
 uv run gcp-key-auditor --help
 ```
 
+## Build and Publish
+
+```bash
+# Build with pip ecosystem tooling
+python -m pip install build twine
+python -m build
+python -m twine check dist/*
+
+# Build with uv
+uv build
+```
+
+Publish to PyPI:
+
+```bash
+python -m twine upload dist/*
+```
+
+Publish to TestPyPI:
+
+```bash
+python -m twine upload --repository testpypi dist/*
+```
+
 ## Research Notes
 
 Probe design and interpretation are based on Google documentation for:
