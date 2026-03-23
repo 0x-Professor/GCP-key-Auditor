@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import os
 from pathlib import Path
 
 GOOGLE_API_KEY_PATTERN = re.compile(r"AIza[0-9A-Za-z\-_]{35}")
@@ -76,24 +77,26 @@ def looks_text_file(path: Path) -> bool:
 def scan_path_for_keys(base_path: Path) -> dict[str, list[str]]:
     found: dict[str, list[str]] = {}
 
-    for path in base_path.rglob("*"):
-        if path.is_dir() and path.name in _SKIP_DIRS:
-            continue
+    for root, dirs, files in os.walk(base_path):
+        dirs[:] = [d for d in dirs if d not in _SKIP_DIRS]
 
-        if not path.is_file() or not looks_text_file(path):
-            continue
+        root_path = Path(root)
+        for file_name in files:
+            path = root_path / file_name
+            if not looks_text_file(path):
+                continue
 
-        try:
-            content = path.read_text(encoding="utf-8", errors="ignore")
-        except OSError:
-            continue
+            try:
+                content = path.read_text(encoding="utf-8", errors="ignore")
+            except OSError:
+                continue
 
-        keys = extract_keys_from_text(content)
-        if not keys:
-            continue
+            keys = extract_keys_from_text(content)
+            if not keys:
+                continue
 
-        rel = str(path.relative_to(base_path))
-        for key in keys:
-            found.setdefault(key, []).append(rel)
+            rel = str(path.relative_to(base_path))
+            for key in keys:
+                found.setdefault(key, []).append(rel)
 
     return found
